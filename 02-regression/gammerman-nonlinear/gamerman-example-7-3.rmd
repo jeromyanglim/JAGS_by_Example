@@ -1,0 +1,113 @@
+`r opts_chunk$set(cache=TRUE)`
+# Warning: This program currently has estimation issues.
+
+The following provides an example of fitting a nonlinear regression model in JAGS.
+
+This example is adapted from [the following website](http://www.dme.ufrj.br/mcmc/nonlinearmodel-R2WinBUGS.html) which supports the book "Markov Chain Monte Carlo"  by Danny Gamerman and Hedibert Freitas Lopes.  The original example was designed to be run using R2WinBUGS.
+
+$$latex y_i \sim N(\alpha - \beta x_i^{-\gamma}, \sigma^2)$$
+
+where $latex \alpha$, $latex \beta$, and $latex \gamma$ are parameters.
+
+I've modified the example somewhat:
+
+* It now uses JAGS and the R packages `rjags` and `coda` 
+* I'm not sure if there was a bug in the orginal code but I had to add some code 
+  to reverse the gamma parameter to effectively give it a prior between -1 and 0
+* I  compare the fit obtained with a non-Bayesian approach using the nls function
+* I use the modelstring convention I picked up from John Kruschke. 
+  This lets you run the entire script in a self-contained way in a single file.
+* I was also assited by [John Myels White's example](http://www.johnmyleswhite.com/notebook/2010/08/29/mcmc-diagnostics-in-r-with-the-coda-package/)
+
+# Load packages
+```{r load_packages, message=FALSE}
+rm(list=ls())
+require(rjags)
+require(coda)
+```
+
+
+# Prepare data
+```{r}
+x <- c(1.0,1.5,1.5,1.5,2.5,4.0,5.0,5.0,7.0,8.0,8.5,9.0,9.5,9.5,10.0,
+          12.0,12.0,13.0,13.0,14.5,15.5,15.5,16.5,17.0,22.5,29.0,31.5)
+y <- c(1.80,1.85,1.87,1.77,2.02,2.27,2.15,2.26,2.47,2.19,2.26,2.40,2.39,2.41,
+      2.50,2.32,2.32,2.43,2.47,2.56,2.65,2.47,2.64,2.56,2.70,2.72,2.57)
+Data <-  list(x=x,  y=y)
+Data[["maxy"]] <- max(Data[["y"]])
+```
+
+
+# Perform non-Bayesian analysis
+```{r}
+nlsfit <- nls(y~alpha - beta * x^gamma, start=list(alpha=3, beta=2, gamma=-.2))
+summary(nlsfit)
+```
+
+* `nls` provides a least squares estimate of the parameter values.
+* This equation was `r round(coef(nlsfit)['alpha'], 2)` - `r round(coef(nlsfit)['beta'], 2)` x ^ `r round(coef(nlsfit)['gamma'], 3)`.
+
+```{r}
+plot(x, y)
+lines(x, predict(nlsfit), col="blue") # add fit line
+```
+
+
+# Export JAGS model
+```{r}
+jags.script <- "
+model{
+    # likelihood
+    for( i in 1:length(x[])) {
+        y[i] ~ dnorm(mu[i], tau)
+        mu[i] <- alpha - beta * x[i] ^ gamma
+    }
+
+    # priors
+    alpha ~ dunif(maxy, 10)
+    beta  ~ dunif(0, alpha)
+    gamma ~ dunif(-1, 0)    
+    tau  ~ dgamma(0.01, 0.01)
+    
+    sigma <- 1 / sqrt(tau)
+}
+" # Model string
+```
+
+
+
+# Perform Bayesian analysis using JAGS
+```{r}
+mod1 <- jags.model(textConnection(jags.script), data=Data, n.chains=4, n.adapt=1000)
+update(mod1, 4000)
+
+mod1.samples <- coda.samples(model=mod1,
+                         variable.names=c('alpha', 'beta', 'gamma', 'sigma'),
+                         n.iter=2000)                  
+plot(mod1.samples) # plot trace and posterior density for each parameter
+summary(mod1.samples) # print descriptive statistics of posterior densities for parameters
+
+cor(mod1.samples[[1]])
+```
+
+
+# Compare model prediction 
+This compares
+
+1.  means of posteriors of parameters
+2. least squares estimates of parameters
+
+```{r}
+alpha.posterior.mean <- summary(mod1.samples)$statistics["alpha", "Mean"]
+beta.posterior.mean <- summary(mod1.samples)$statistics["beta", "Mean"]
+gamma.posterior.mean <- summary(mod1.samples)$statistics["gamma", "Mean"]
+```
+
+```{r}
+plot(x, y)
+lines(x, predict(nlsfit), col="blue") # add fit line
+ypred <- alpha.posterior.mean - beta.posterior.mean*x^(gamma.posterior.mean)
+lines(x, ypred, col="red")
+lines(x, predict(nlsfit), col="blue") # add fit line
+legend(x=15, y=2, legend=c("posterior mean", "nls"), col=c("red", "blue"), lty=1)
+```

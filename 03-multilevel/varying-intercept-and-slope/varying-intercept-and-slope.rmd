@@ -1,0 +1,94 @@
+# Varying intercept and slope model
+
+$$latex stay_{ij} = \alpha_i + \beta_i * x_{ij} + e_{ij}$$
+
+
+# Import packages
+```{r message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(lme4)
+library(lattice)
+```
+
+# Specify and export BUGS model
+```{r}
+modelstring <- "
+model {
+# Model
+for (i in 1:length(Y)) {
+    mu[i] <- alpha[id.i[i]] + beta[id.i[i]] * (X[i] - x.bar);
+    Y[i]   ~ dnorm(mu[i], tau.c)
+}
+
+for (j in 1:J) {    
+    alpha[j] ~ dnorm(alpha.mu, alpha.tau);
+    beta[j] ~ dnorm(beta.mu, beta.tau);
+}
+
+# Priors
+alpha.mu  ~ dnorm(0, 1.0E-4);
+beta.mu   ~ dnorm(0, 1.0E-4);
+tau.c     ~ dgamma(1.0E-3, 1.0E-3);
+alpha.tau ~ dgamma(1.0E-3, 1.0E-3);
+beta.tau ~ dgamma(1.0E-3, 1.0E-3);
+
+# Transformations
+alpha.sigma  <- 1.0/sqrt(alpha.tau);
+beta.sigma  <- 1.0/sqrt(beta.tau);
+sigma.c    <- 1.0/sqrt(tau.c);
+x.bar    <- mean(X[]);
+alpha0   <- alpha.mu - beta.mu*x.bar;
+}
+"
+writeLines(modelstring, "model.txt")
+```
+
+# Generate Data
+```{r}
+set.seed(4444)
+Alpha.Mu <- 2
+Alpha.Sigma <- 2
+Beta <- 1
+Sigma <- 1
+J <- 200 # number of observations per case
+N <- 10 # number of cases
+
+Data <- expand.grid(id.i=seq(1:N), id.j=seq(1,J))
+Data$x <- rnorm(nrow(Data), mean=5, sd=1)
+Alpha <- rnorm(N, Alpha.Mu, Alpha.Sigma)
+Data$alpha <- Alpha[Data$id.i]
+Data$error <- rnorm(nrow(Data), 0, Sigma)
+Data$yhat <- Data$alpha + Beta * Data$x
+Data$y <- Data$yhat + Data$error
+
+# Convert data to input format required by JAGS
+jagsdata <- list(X=Data$x, Y=Data$y, id.i=Data$id.i, J=length(unique(Data$id.i)))
+```
+
+
+# Bayesian analysis
+```{r}
+mod1 <- jags.model("model.txt", data=jagsdata, n.chains=4, n.adapt=1000)
+update(mod1, 1000) # burn in
+
+# monitor
+mod1.samples <- coda.samples(model=mod1,
+                             variable.names=c('alpha.mu', 'alpha.sigma', 
+                                              'beta.mu', 'beta.sigma',
+                                              'alpha0', 'sigma.c'),
+                             n.iter=1000)                  
+
+# Model summary and diagnostics
+plot(mod1.samples) # plot trace and posterior density for each parameter
+summary(mod1.samples) # print descriptive statistics of posterior densities for parameters
+
+# Check model predictions
+# mu.samples <- coda.samples(model=mod1,
+#                              variable.names=c('mu'),
+#                              n.iter=100)                  
+# mu.means <- summary(mu.samples) # print descriptive statistics of posterior densities for parameters
+# plot(mu.means$statistics[,1], Data$y - mu.means$statistics[,1], 
+#      xlab="Predicted", ylab="Resid")
+```

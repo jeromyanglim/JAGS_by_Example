@@ -1,0 +1,194 @@
+`r opts_chunk$set(cache=TRUE)`
+This post examines the Rats example from JAGS. 
+
+
+The Rats example is based on the example in [WinBUGS](http://www.mrc-bsu.cam.ac.uk/bugs/documentation/exampVol1/node3.html), which in turn is taken from section 6 Gelfand et al (1960).  The [original JAGS code is here](http://sourceforge.net/projects/mcmc-jags/files/Examples/2.x/)
+
+Observed data are $latex y_{ij}$ weights of rats where each rat is indexed $latex i=1, \ldots, N$, and measurements are obtained at incremental time points indexed $latex j = 1, \ldots, T$.
+The actual age of rats at obsevation $latex j$ is indicated by $latex x_j$.
+
+$$latex y_{ij} \sim N(\alpha_i + \beta_i x_{j}, \sigma^2)$$
+$$latex \alpha_i ~ N(\mu_{\alpha}, \sigma^2_{\alpha})$$
+$$latex \beta_i ~ N(\mu_{\beta}, \sigma^2_{\beta})$$
+
+Noninformative normal priors were specified for $latex \mu_{\alpha}$ and $latex \mu_{\beta}$ and noninformaive Gamma priors were specified for the precision parameters.
+
+# Load packages
+```{r message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(nlme)
+library(ggplot2)
+```
+
+* `coda` supports analysis of MCMC output
+* `nlme` provides functions for multilevel modelling and modelling linear regression separately for a set of individuals.
+
+# Get data
+```{r getdata}
+Data <- list(
+    N =   30,
+    T =    5,
+    Y =   structure(c(151, 145, 147, 155, 135, 159, 141, 159, 177, 134, 
+                160, 143, 154, 171, 163, 160, 142, 156, 157, 152, 154, 139, 146, 
+                157, 132, 160, 169, 157, 137, 153, 199, 199, 214, 200, 188, 210, 
+                189, 201, 236, 182, 208, 188, 200, 221, 216, 207, 187, 203, 212, 
+                203, 205, 190, 191, 211, 185, 207, 216, 205, 180, 200, 246, 249, 
+                263, 237, 230, 252, 231, 248, 285, 220, 261, 220, 244, 270, 242, 
+                248, 234, 243, 259, 246, 253, 225, 229, 250, 237, 257, 261, 248, 
+                219, 244, 283, 293, 312, 272, 280, 298, 275, 297, 350, 260, 313, 
+                273, 289, 326, 281, 288, 280, 283, 307, 286, 298, 267, 272, 285, 
+                286, 303, 295, 289, 258, 286, 320, 354, 328, 297, 323, 331, 305, 
+                338, 376, 296, 352, 314, 325, 358, 312, 324, 316, 317, 336, 321, 
+                334, 302, 302, 323, 331, 345, 333, 316, 291, 324), .Dim = c(30, 
+                                                                            5)),
+    x = c(8.0, 15.0, 22.0, 29.0, 36.0)
+)
+```
+
+
+
+# Preliminary data analysis
+```{r prelim}
+Data.long <- data.frame(
+    xj=rep(c(8, 15, 22, 29, 36), each=30),
+    i=rep(1:30, 5),
+    Y=as.vector(Data$Y))
+
+lmfit <- lmList(Y ~ xj | i, Data.long[, ])
+```
+
+* `lmList` fits a linear model for each individual predicting weight (`Y`) from time (`xj`).
+
+```{r}
+summary(lmList(Y ~ xj | i, Data.long[Data.long$i %in% 1:5, ]))
+```
+
+The above code shows a summary of the output for five participants.
+
+
+```{r}
+c(
+    mean_alpha = mean(sapply(lmfit, function(X) coef(X)[1])), # mean of intercept
+    mean_beta = mean(sapply(lmfit, function(X) coef(X)[2])), # mean of slope
+    sd_alpha = sd(sapply(lmfit, function(X) coef(X)[1])), # sd of intercept
+    sd_beta = sd(sapply(lmfit, function(X) coef(X)[2])) # sd of slope
+    )
+```
+
+* The above code provides averages for the sample coefficients.
+
+```{r plotrawdata}
+ggplot(Data.long, aes(xj, Y)) + geom_point(shape = 1) +
+     facet_wrap(~i)
+```
+* This lattice plot
+
+# Specify and export BUGS model
+```{r export.bugs.model}
+modelstring <- "
+model {
+    # Model
+    for (i in 1:N) {
+        for (j in 1:T) {
+            mu[i, j] <- alpha[i] + beta[i] * (x[j] - x.bar);
+            Y[i,j] ~ dnorm(mu[i,j], tau.c)
+        }
+        alpha[i] ~ dnorm(alpha.mu, alpha.tau);
+        beta[i]  ~ dnorm(beta.mu, beta.tau);
+    }
+
+    # Priors
+    alpha.mu   ~ dnorm(0, 1.0E-4);
+    beta.mu    ~ dnorm(0, 1.0E-4);
+    tau.c     ~ dgamma(1.0E-3, 1.0E-3);
+    alpha.tau ~ dgamma(1.0E-3, 1.0E-3);
+    beta.tau  ~ dgamma(1.0E-3, 1.0E-3);
+
+    # Transformations
+    alpha.sigma  <- 1.0/sqrt(alpha.tau);
+    beta.sigma <- 1.0/sqrt(beta.tau);
+    sigma.c    <- 1.0/sqrt(tau.c);
+    x.bar    <- mean(x[]);
+    alpha0   <- alpha.mu - beta.mu*x.bar;
+}
+"
+
+writeLines(modelstring, "model.txt")
+```
+
+A few observations about the code above:
+
+* The data is balanced, so it is possible to treat the dependent variable $latex y$ as a matrix.
+* Various transformations are applied to values to extract meaningful values. E.g., $latex \sigma = \frac{1}{\sqrt{\tau}}$.
+
+# Perform Bayesian analysis using JAGS
+```{r runjags}
+mod1 <- jags.model("model.txt", data=Data, n.chains=4, n.adapt=1000)
+update(mod1, 1000) # burn in
+mod1.samples <- coda.samples(model=mod1,
+                             variable.names=c('alpha.mu', 'alpha.sigma', 
+                                              'beta.mu', 'beta.sigma',
+                                              'sigma.c'),
+                             n.iter=1000, thin=5)                  
+```
+
+# Model summary and diagnostics
+```{r}
+plot(mod1.samples) 
+
+```
+
+`mod.samples` is of class `r class(mod1.samples)`. Each chain is an element of `mod1.samples` and is of class `r class(mod1.samples[[1]])`. Thus, `plot.mcmc` is an S3 method of the `mcmc` class.
+
+Trace plots provide useful diagnostic estimation:
+
+* The trace plots show the value of a variable across the monitored iteractions of the MCMC chain.  
+* Trace plots can reveal auto-correlation which reduces the information provided by each iteration. 
+* Trace plots can  reveal inadequate burn-in when early
+* If you specify to monitor multiple chains, then the trace plot will display each chain in a different colour.
+  If one chain is sampling a different set of values, this suggests there is a 
+ 
+Density plots summarise the posterior density for each variable estimated based on the sampling of the variable in the MCMC chains.
+
+
+```{r}
+summary(mod1.samples) # print descriptive statistics of posterior densities for parameters
+```
+
+The `summary` method for the `mcmc` class provides numeric summaries of the MCMC samples values for each variable
+
+* The Mean collumn provides something equivalent to a point estimate of the parameter of interest. It can serve a  similar role as  a least squares of maximum likelihood estimate in a frequentist analysis.
+* The standard deviation (SD) is the standard deviation of sampled values from the posterior.
+  It provides information about certainty to which the value of the variable is known.
+* Naive and Time-Series Standard Error (SE) provide information about the standard error in estimating the posterior mean. Increasing the number of monitored iterations in the MCMC run should decrease this standard error. The time-series version is arguably the more informative value. If there is auto-correlation then each iteration does not provide an independent unit of information. In this case, the time-series SE adjusts for the non-indepndence of each iteration.
+* The Quantiles tables  provides various quantile estimates. It defaults to useful values, but different quantiles can be specified. In particular, the 50th percentile corresponds to the median. And the 2.5 and 97.5 percentiles can be combined to form a $latex 95\%$ [credible interval](http://en.wikipedia.org/wiki/Credible_interval).
+
+
+```{r}
+autocorr(mod1.samples[[1]]) # auto-correlation and cross-correlation 
+                       # values for each chain, parameter, and several lag values
+
+acfplot(mod1.samples) # Auto-correlation plot fo each parameter, each chain, and varying lag count
+
+gelman.plot(mod1.samples) # 
+                          # Requires 2 or more chains
+```
+
+```{r}
+geweke.plot(mod1.samples[[1]])
+```
+The BUGS website provides [information of the meaning and interpretation of the Geweke diagnostic plot](http://www.mrc-bsu.cam.ac.uk/bug/documentation/coda03/node26.html). In particular, "a large number of Z-scores falling outside this interval suggests possible convergence failure."
+
+
+```{r hpdinterval}
+list(int90 = HPDinterval(mod1.samples[[1]], prob=.90),
+     int95= HPDinterval(mod1.samples[[1]], prob=.95),
+    int99= HPDinterval(mod1.samples[[1]], prob=.99))
+```
+* Highest Posterior Density (HPD) intervals for 90, 95, and 99 percent intervals assuming that the data is not severely multimodal.
+
+```{r dic}
+dic.samples(mod1, 1000) # penalised deviance statistic
+```

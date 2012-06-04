@@ -1,0 +1,96 @@
+Basic varying intercept multilevel model
+
+$$ y_{ij} = \alpha_i + \beta * x_{ij} + \epsilon$$
+
+where 
+
+$$latex \epsilon \sim N(0, \sigma^2)$$
+and
+$$latex \alpha_i \sim N(\mu_{\alpha}, \sigma^2_{\alpha})$$.
+
+# Import packages
+```{r message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(ggplot2)
+```
+
+# Specify and export BUGS model
+```{r}
+modelstring <- "
+model {
+    # Model
+    for (i in 1:N) {
+        mu[i] <- alpha[id.i[i]] + beta * (X[i] - x.bar);
+        Y[i]   ~ dnorm(mu[i], tau.c)
+    }
+
+    for (i in 1:I) {    
+        alpha[i] ~ dnorm(alpha.mu, alpha.tau);
+    }
+
+    # Priors
+    beta      ~ dnorm(0, 1.0E-4);
+    alpha.mu  ~ dnorm(0, 1.0E-4);    
+    tau.c     ~ dgamma(1.0E-3, 1.0E-3);
+    alpha.tau ~ dgamma(1.0E-3, 1.0E-3);
+
+    # Transformations
+    alpha.sigma  <- 1.0/sqrt(alpha.tau);
+    sigma.c    <- 1.0/sqrt(tau.c);
+    x.bar    <- mean(X[]);
+    alpha0   <- alpha.mu - beta*x.bar;
+}
+"
+
+writeLines(modelstring, "model.txt")
+```
+
+# Generate Data
+```{r}
+set.seed(4444)
+Alpha.Mu <- 2
+Alpha.Sigma <- 2
+Beta <- 1
+Sigma <- 1
+J <- 10
+N <- 15
+
+Data <- expand.grid(id.i=seq(1:N), id.j=seq(1,J))
+Data$latex x <- rnorm(nrow(Data), mean=5, sd=1)
+Alpha <- rnorm(N, Alpha.Mu, Alpha.Sigma)
+Data$latex alpha <- Alpha[Data$id.i]
+Data$latex error <- rnorm(nrow(Data), 0, Sigma)
+Data$latex yhat <- Data$latex alpha + Beta * Data$x
+Data$latex y <- Data$latex yhat + Data$error
+
+# Convert data to input format required by JAGS
+jagsdata <- list(X=Data$x, Y=Data$y, id.i=Data$id.i, N=nrow(Data), 
+                 I=length(unique(Data$id.i)))
+```
+
+# Examine data
+```{r}
+ggplot(Data, aes(x, y)) + geom_point(shape = 1) +
+     facet_wrap(~id.i)
+```
+
+
+# Bayesian analysis
+```{r}
+mod1 <- jags.model("model.txt", data=jagsdata, n.chains=4, n.adapt=1000)
+update(mod1, 1000) # burn in
+mod1.samples <- coda.samples(model=mod1,
+                             variable.names=c('alpha.mu', 'alpha.sigma', 
+                                              'beta',   'alpha0',
+                                              'sigma.c'),
+                             n.iter=1000)                  
+```
+
+# Model summary and diagnostics
+```{r}
+plot(mod1.samples) # plot trace and posterior density for each parameter
+
+summary(mod1.samples) # print descriptive statistics of posterior densities for parameters
+```

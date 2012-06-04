@@ -1,0 +1,28 @@
+
+model {
+# Model
+for (i in 1:length(Y)) {
+    mu[i] <- alpha[id.i[i]] + beta[id.i[i]] * (X[i] - x.bar);
+    Y[i]   ~ dnorm(mu[i], tau.c)
+}
+
+for (j in 1:J) {    
+    alpha[j] ~ dnorm(alpha.mu, alpha.tau);
+    beta[j] ~ dnorm(beta.mu, beta.tau);
+}
+
+# Priors
+alpha.mu  ~ dnorm(0, 1.0E-4);
+beta.mu   ~ dnorm(0, 1.0E-4);
+tau.c     ~ dgamma(1.0E-3, 1.0E-3);
+alpha.tau ~ dgamma(1.0E-3, 1.0E-3);
+beta.tau ~ dgamma(1.0E-3, 1.0E-3);
+
+# Transformations
+alpha.sigma  <- 1.0/sqrt(alpha.tau);
+beta.sigma  <- 1.0/sqrt(beta.tau);
+sigma.c    <- 1.0/sqrt(tau.c);
+x.bar    <- mean(X[]);
+alpha0   <- alpha.mu - beta.mu*x.bar;
+}
+

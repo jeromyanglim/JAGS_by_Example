@@ -1,0 +1,401 @@
+`r opts_chunk$set(cache=TRUE)`
+# TODO:
+
+* Understand problem with model `M7`.
+* Make mathematics, simulation, and JAGS notation more consistent
+* Review decisions about priors
+* Review assumptions in simulation code
+
+
+
+# Import packages
+```{r message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(psych)
+```
+
+# Get data
+```{r get_data}
+# Generate Data
+N <- 200 # sample size
+Tausq <- .6^2 # true variance
+Sigmasq <- .1^2 # measurement variance
+
+Delta <- 3 # mean true honest score
+MaxScore <- 5
+
+Alpha0 <- 3
+Alpha1 <- -1
+
+Eta <- rnorm(n=N, 0, sd=sqrt(Tausq)) # True centred-score
+E <- rnorm(n=N, mean=0, sd=sqrt(Sigmasq))
+
+Mu <- Delta + Eta # True Honest Score
+Mu <- ifelse(Mu >=4.9, 4.9, Mu) # Necessary constraint
+
+Y1 <- Mu + E #Y1 (honest) score
+
+Beta <- runif(N, Mu, MaxScore) #Y2 (applicant) score if person fakes
+
+logistic <- function(x, alpha0, alpha1) {
+    exp(alpha0 + alpha1 * x) /
+        (1 + exp(alpha0 + alpha1 * x))
+}
+
+Pi <- logistic(Delta + Eta, Alpha0, Alpha1) #Probability of fake
+Gamma <- rbinom(N, size=1, Pi) # Gamma = 1 is fake; Gamma = 0 not fake
+
+Y2 <- Gamma * Beta + (1-Gamma)*Mu
+
+Data <- data.frame(Y1, Y2, Beta, Pi, Gamma)
+
+# Convert data to input format required by JAGS
+jagsdata.Y1Y2 <- list(Y1=Y1, Y2=Y2)
+```
+
+# Examine data
+```{r eaxamine_data}
+# simple examination of data
+plot(Y2, Y1); abline(a=0, b=1)
+```
+
+
+
+
+# Fit Jags Models
+## M3: Simple Y1Y2
+
+$$latex y_{1i} \sim N(\beta_0, 1/\beta_1)$$
+$$latex y_{2i} \sim N(\gamma_0, 1/\gamma_1)$$
+
+with priors
+
+$$latex \beta_0 \sim  Unif(1, 5)$$
+$$latex \beta_1 \sim Unif(0, 100)$$
+$$latex \gamma_0 \sim Unif(1, 5)$$
+$$latex \gamma_1 \sim Unif(0, 100)$$
+
+
+### JAGS Model
+```{r m3_script, tidy=FALSE}
+m3.jags <- "
+model {
+    # Model
+    for (i in 1:length(Y1)) {
+        Y1[i] ~ dnorm(Beta0, Beta1)
+        Y2[i] ~ dnorm(Gamma0, Gamma1)
+    }
+    Beta0 ~ dunif(1, 5)
+	Beta1 ~ dunif(0, 100)
+
+    Gamma0 ~ dunif(1, 5)
+	Gamma1 ~ dunif(0, 100)
+}
+"
+```
+
+### Model fitting
+
+```{r m3}
+mod3 <- jags.model(textConnection(m3.jags), data=jagsdata.Y1Y2, n.chains=4, n.adapt=500)
+update(mod3, 500) # burn in
+mod3.samples <- coda.samples(model=mod3,n.iter=500,
+                             variable.names=c('Beta0', 'Beta1', 'Gamma0', 'Gamma1'))                  
+plot(mod3.samples); summary(mod3.samples)
+
+```
+
+## M4: Correlated Y1 Y2
+
+And the model is: 
+
+$y_{1i} \sim N(\beta_0, 1/\beta_1)$
+$y_{2i} \sim N(\alpha_1 Y_{1i}, 1/\gamma_1)$
+
+With priors:
+
+$\beta_0 \sim Unif(1, 5)$
+$\beta_1 \sim Unif(0, 100)$
+$\alpha_1 \sim Unif(0, 10)$
+$\alpha_1 \sim Unif(0, 100)$
+
+
+### JAGS Model
+```{r m4_script, tidy=FALSE}
+m4.jags <- "
+model {
+    # Model
+    for (i in 1:length(Y2)) {
+        Y1[i] ~ dnorm(Beta0, Beta1)
+        Y2[i] ~ dnorm(Eta[i], Gamma1)
+        Eta[i] <- Alpha1 * Y1[i]
+    }
+
+    Beta0 ~ dunif(1, 5)
+	Beta1 ~ dunif(0, 100)
+
+    Alpha1 ~ dunif(0, 10)
+	Gamma1 ~ dunif(0, 100)
+
+    Y1SD <- Beta1 ^(-0.5)
+    Y2SD <- Gamma1 ^(-0.5)
+}
+"
+```
+
+### Model fitting
+```{r m4}
+mod4 <- jags.model(textConnection(m4.jags), data=jagsdata.Y1Y2, n.chains=4, n.adapt=500)
+update(mod4, 500) # burn in
+mod4.samples <- coda.samples(model=mod4,n.iter=500,
+                             variable.names=c('Beta0', 'Y1SD', 'Alpha1', 'Y2SD'))                  
+plot(mod4.samples); summary(mod4.samples)
+```
+
+## M5: Equal means and SDs
+
+The model is:
+$latex y_{1i} \sim N(\beta_0, 1/\beta_1)$
+$latex y_{2i} \sim N(\alpha1 y_{1i}, 1/\gamma_i)$
+
+And priors are:
+$latex \beta_0 \sim Unif(1, 5)$
+$latex \beta_1 \sim Unif(0, 100)$
+$latex \alpha_1 \sim Unif(0, 10)$
+$latex \gamma_1 \sim Unif(0, 100)$
+
+
+### JAGS Model
+```{r m5_script, tidy=FALSE}
+m5.jags <- "
+model {
+    # Model
+    for (i in 1:length(Y2)) {
+        Y1[i] ~ dnorm(Beta0, Beta1)
+        Y2[i] ~ dnorm(Eta[i], Gamma1)
+        Eta[i] <- Alpha1 * Y1[i]
+    }
+
+	Beta0 ~ dunif(1, 5)
+	Beta1 ~ dunif(0, 100)
+
+    Alpha1 ~ dunif(0, 10)
+	Gamma1 ~ dunif(0, 100)
+
+    Y1SD <- Beta1 ^(-0.5)
+    Y2SD <- Gamma1 ^(-0.5)
+}
+"
+```
+
+### Model fitting
+```{r m5}
+mod5 <- jags.model(textConnection(m5.jags), data=jagsdata.Y1Y2, n.chains=4, n.adapt=500)
+update(mod5, 500) # burn in
+mod5.samples <- coda.samples(model=mod5,n.iter=500,
+                             variable.names=c('Beta0', 'Beta1', 'Alpha1', 
+                                              'Gamma1', 'Y1SD', 'Y2SD'))
+plot(mod5.samples); summary(mod5.samples)
+```
+
+## DIC example
+```{r dic_example}
+dic.mod3 <- dic.samples(mod3, 1000, "pD")
+dic.mod5 <- dic.samples(mod5, 1000, "pD")
+dic.mod3; 
+dic.mod5; 
+diffdic(dic.mod3, dic.mod5)
+```
+
+## M6
+### JAGS Model
+The model is
+
+$latex Y_{1i} \sim N(\delta, 1/\tau)$
+$latex Y_{2i} \sim N(\delta + \gamma_i \text{Fake}, 1/\tau)$
+$latex \gamma_i \sim Bern(\pi)$
+
+```{r tidy=FALSE}
+m6.jags <- "
+model {
+    # Model
+    for (i in 1:length(Y1)) {
+        Y1[i] ~ dnorm(Delta, TauPrecision)
+        Y2[i] ~ dnorm(Delta + Gamma[i] * Fake, TauPrecision)
+        Gamma[i] ~ dbern(Pi)
+    }
+
+    # Priors
+    # Delta ~ dnorm(1, 5)
+    # Alpha0 ~ dnorm(0, 10)
+    #Alpha1 ~ dnorm(0, 10)
+
+    Delta ~ dunif(1, 5)
+    Fake ~ dunif(0, 2)
+    TauPrecision ~ dgamma(1.0E-3, 1.0E-3);
+    Pi ~ dunif(0, 1)
+    TauSD <- TauPrecision ^ -0.5
+}
+"
+
+```
+
+### Model fitting
+```{r m6}
+mod6 <- jags.model(textConnection(m6.jags), data=jagsdata.Y1Y2, n.chains=4, n.adapt=500)
+update(mod6, 500) # burn in
+mod6.samples <- coda.samples(model=mod6, n.iter=1000, thin=2,
+                             variable.names=c('TauSD', 'Delta', 'Fake', 'Pi'))                  
+plot(mod6.samples); summary(mod6.samples)
+
+
+dic.mod6 <- dic.samples(mod6, 1000, "pD")
+dic.mod5 <- dic.samples(mod5, 1000, "pD")
+dic.mod5; 
+dic.mod6; 
+diffdic(dic.mod6, dic.mod5)
+```
+
+## M7: M6 with logistic model
+
+The likelihood is:
+
+$latex y_{1i} \sim N(\delta, 1/\tau)$
+$latex y_{2i} \sim N(\delta + \gamma_i \text{Fake}, 1/\tau)$
+$latex \gamma_i \sim \text{Bern}(\pi_i)$
+$latex \pi_i = \frac{\exp(\alpha_0 + \alpha_1 y_{1i})}{1 + \exp(\alpha_0 + alpha_1 y_{1i})}$
+
+
+### JAGS Model
+```{r tidy=FALSE}
+m7.jags <- "
+model {
+    # Model
+    for (i in 1:length(Y1)) {
+        Y1[i] ~ dnorm(Delta, TauPrecision)
+        Y2[i] ~ dnorm(Delta + Gamma[i] * Fake, TauPrecision)
+        Gamma[i] ~ dbern(Pi[i])
+        Ybar1[i] <- Y1[i] - mean(Y1)
+        Pi[i] <- exp(Alpha0 + Alpha1 * Ybar1[i]) / (1 + exp(Alpha0 + Alpha1 * Ybar1[i]))
+    }
+
+    # Priors
+    Delta ~ dunif(1, 5)
+    Fake ~ dunif(0, 2)
+    TauPrecision ~ dgamma(1.0E-3, 1.0E-3);
+    TauSD <- TauPrecision ^ -0.5
+    Alpha0 ~ dnorm(0, 1.0E-3)
+    Alpha1 ~ dnorm(0, 1.0E-3)
+    GammaMean <- mean(Gamma)
+}
+"
+```
+
+### Model fitting
+```{r m7}
+mod7 <- jags.model(textConnection(m7.jags), data=jagsdata.Y1Y2, n.chains=4, n.adapt=500)
+update(mod7, 500) # burn in
+mod7.samples <- coda.samples(model=mod7, n.iter=1000, thin=2,
+                             variable.names=c('TauSD', 'Delta', 'Fake', 
+                                              'Alpha0', 'Alpha1', 'GammaMean'))                  
+plot(mod7.samples); summary(mod7.samples)
+
+# examine data and model
+mod7.samples.data <- coda.samples(model=mod7, n.iter=1000, thin=2,
+                             variable.names=c('Gamma', 'Y1', 'Y2'))
+x <- summary(mod7.samples.data)
+x <- x$statistics[,1]
+x <- matrix(x, ncol=3, byrow=FALSE)
+x <- data.frame(x)
+names(x) <- c('Gamma', 'Y1', 'Y2')
+coplot(Y1 ~ Y2 | Gamma, x, rows=1)
+```
+
+# M8: Fake from Y1 to Max
+Likelihood model is:
+
+$latex y_{1i} \sim N(\delta, \tau)$
+$latex y_{2i} \sim N((1 - \gamma_i) \delta + \gamma_i \text{Fake}_i, \tau)$
+$latex \gamma_i \sim \text{Bern}(\pi_i)$
+$latex \pi_i = \frac{\exp(\alpha_0 + \alpha_1 y_{1i})}{1 + \exp(\alpha_0 + alpha_1 y_{1i})}$
+$latex \text{Fake}_i \sim \text{Unif}(Y_{1i}, 5)$
+
+
+### JAGS Model
+```{r m8_script, tidy=FALSE}
+m8.jags <- "
+model {
+    # Model
+    for (i in 1:length(Y1)) {
+        Y1[i] ~ dnorm(Delta, TauPrecision)
+        Y2[i] ~ dnorm((1 - Gamma[i]) * Delta + Gamma[i] * Fake[i], TauPrecision)
+        Gamma[i] ~ dbern(Pi[i])
+        Ybar1[i] <- Y1[i] - mean(Y1)
+        Pi[i] <- exp(Alpha0 + Alpha1 * Ybar1[i]) / (1 + exp(Alpha0 + Alpha1 * Ybar1[i]))
+        Fake[i] ~ dunif(Y1[i], 5)
+    }
+
+    # Priors
+    Delta ~ dunif(1, 5)
+    TauPrecision ~ dgamma(1.0E-3, 1.0E-3);
+    TauSD <- TauPrecision ^ -0.5
+    Alpha0 ~ dnorm(0, 1.0E-3)
+    Alpha1 ~ dnorm(0, 1.0E-3)
+    GammaMean <- mean(Gamma)
+}
+"
+```
+
+### Model fitting
+```{r m8}
+mod8 <- jags.model(textConnection(m8.jags), data=jagsdata.Y1Y2, n.chains=4, n.adapt=500)
+update(mod8, 500) # burn in
+mod8.samples <- coda.samples(model=mod8, n.iter=1000, thin=2,
+                             variable.names=c('TauSD', 'Delta',
+                                              'Alpha0', 'Alpha1', 'GammaMean'))                  
+plot(mod8.samples); summary(mod8.samples)
+```
+
+## M9: Measurement error
+The likelihood model is 
+### JAGS Model
+```{r tidy=FALSE}
+m9.jags <-"
+model {
+    # Model
+    for (i in 1:length(Y1)) {
+        Delta[i] ~ dnorm(Mu, MuPrecision)   # latent true personality
+        Y1[i] ~ dnorm(Delta[i], TauPrecision)   # observed development score
+        Y2[i] ~ dnorm((1 - Gamma[i]) * Delta[i] + Gamma[i] * Fake[i], TauPrecision)   # observed applicant score
+        Gamma[i] ~ dbern(Pi[i])   # whether participant faked
+        DeltaBar[i] <- Delta[i] - mean(Delta)   # Centered latent true personality
+        Pi[i] <- exp(Alpha0 + Alpha1 * DeltaBar[i]) / (1 + exp(Alpha0 + Alpha1 * DeltaBar[i]))   # probability of faking
+        Fake[i] ~ dunif(Delta[i], 5)   # observed applicant score if person fakes
+    }
+
+    # Priors
+    Mu ~ dunif(1, 5)
+    MuPrecision ~ dgamma(1.0E-3, 1.0E-3)
+    MuSD <- MuPrecision ^ -0.5
+    TauPrecision <- 1/(0.1 ^ 2)
+    TauSD <- TauPrecision ^ -0.5
+    Alpha0 ~ dnorm(0, 1.0E-3)
+    Alpha1 ~ dnorm(0, 1.0E-3)
+    GammaMean <- mean(Gamma)
+}
+"
+
+```
+
+### Model Fitting
+```{r tidy=FALSE, }
+# M9 (warning: this is very slow) 
+# mod9 <- jags.model(textConnection(m9.jags), data=jagsdata.Y1Y2, n.chains=1, n.adapt=200)
+# update(mod9, 500) # burn in
+# mod9.samples <- coda.samples(model=mod9, n.iter=1000, thin=2,
+#                              variable.names=c('Mu', 'MuSD', 
+#                                               'Alpha0', 'Alpha1', 'GammaMean'))                  
+# plot(mod9.samples); summary(mod9.samples)
+```

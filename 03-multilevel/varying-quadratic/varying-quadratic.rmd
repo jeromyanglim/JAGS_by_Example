@@ -1,0 +1,150 @@
+# Skill acquisition example
+Data is
+
+* y: is reaction time
+* x: is trial number 1 to J for subject 1 to N
+
+Data is simulated from a quadratic model
+
+# Import packages
+```{r message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(lattice)
+```
+
+
+
+
+# Simulate data
+```{r}
+set.seed(1234)
+J <- 20 # number of time points per subject
+N <- 30 # number of subjects
+Sigma <- .5 # standard deviation of error
+
+beta1.min <- 8
+beta1.max <- 10
+beta2.min <- -.5
+beta2.max <- -.3
+beta3.min <- .01
+beta3.max <- .02
+
+beta1.mu <- (beta1.min + beta1.max) / 2
+beta1.sd <- sqrt(1/12 * (beta1.max - beta1.min)^2)
+beta2.mu <- (beta2.min + beta2.max) / 2
+beta2.sd <- sqrt(1/12 * (beta2.max - beta2.min)^2)
+beta3.mu <- (beta3.min + beta3.max) / 2
+beta3.sd <- sqrt(1/12 * (beta3.max - beta3.min)^2)
+
+# subject level parameters    
+subjects <- data.frame(subject=seq(N))
+subjects$beta1 <- runif(nrow(subjects), beta1.min, beta1.max)
+subjects$beta2 <- runif(nrow(subjects), beta2.min, beta2.max)
+subjects$beta3 <- runif(nrow(subjects), beta3.min, beta3.max)
+
+Data <- expand.grid(subject=seq(N), trial=seq(J))
+Data <- merge(Data, subjects)
+
+Data$yhat <- Data$beta1 + Data$beta2 * Data$trial + Data$beta3 * Data$trial^2
+Data$error <- rnorm(nrow(Data), 0, Sigma) # naive model of error; permits negative rt
+Data$y <- Data$yhat + Data$error
+
+min(Data$y) # check whether particular sample has negative rt
+
+
+# Convert data to input format required by JAGS
+jagsdata <- list(subject=Data$subject, trial=Data$trial, y=Data$y, N=N)
+```
+
+
+# traditional analysis
+```{r}
+xyplot(y~trial|factor(subject), Data)
+
+DataSplit <- split(Data, Data$subject)
+nlsfits <- lapply(DataSplit, function(X)
+    nls(y~beta1+beta2*trial+beta3*trial^2, X, start=list(beta1=7, beta2=-.4, beta3=.02)))
+nlscoefs <- sapply(nlsfits, coef)
+apply(nlscoefs, 1, function(X) c(mean=mean(X), sd=sd(X)))
+
+nlscoefs <- sapply(nlsfits, coef)
+nlssds <- sapply(nlsfits, function(X) sqrt(deviance(X)/(N-1)))
+nlsall <- rbind(nlscoefs, sd=nlssds)
+apply(nlsall, 1, function(X) c(mean=mean(X), sd=sd(X)))
+```
+
+# Specify JAGS model
+```{r tidy=FALSE}
+jags.script <- "
+model {
+# Model
+for (i in 1:length(y)) {
+    mu[i] <- beta1[subject[i]] + beta2[subject[i]] * trial[i] +
+        beta3[subject[i]] * trial[i] ^ 2;
+    y[i]  ~ dnorm(mu[i], tau.c)
+}
+
+# Random coefficients
+for (i in 1:N) {    
+    beta1[i] ~ dnorm(beta1.mu, beta1.tau);
+    beta2[i] ~ dnorm(beta2.mu, beta2.tau);
+    beta3[i] ~ dnorm(beta3.mu, beta3.tau);
+}
+
+# Priors
+beta1.mu  ~ dnorm(0, 1.0E-4);
+beta2.mu   ~ dnorm(0, 1.0E-4);
+beta3.mu   ~ dnorm(0, 1.0E-4);
+tau.c     ~ dgamma(1.0E-3, 1.0E-3);
+beta1.tau ~ dgamma(1.0E-3, 1.0E-3);
+beta2.tau ~ dgamma(1.0E-3, 1.0E-3);
+beta3.tau ~ dgamma(1.0E-3, 1.0E-3);
+
+# Transformations
+beta1.sigma  <- 1.0/sqrt(beta1.tau);
+beta2.sigma  <- 1.0/sqrt(beta2.tau);
+beta3.sigma  <- 1.0/sqrt(beta3.tau);
+sigma.c    <- 1.0/sqrt(tau.c);
+}
+"
+```
+
+
+# Bayesian analysis
+```{r}
+mod1 <- jags.model(textConnection(jags.script), data=jagsdata, n.chains=4, n.adapt=1000)
+update(mod1, 200) # burn in
+
+# monitor
+mod1.samples <- coda.samples(model=mod1,
+                             variable.names=c('beta1.mu', 'beta1.sigma', 
+                                              'beta2.mu', 'beta2.sigma',
+                                              'beta3.mu', 'beta3.sigma',
+                                              'sigma.c'),
+                             n.iter=1000)
+
+# Model summary and diagnostics
+plot(mod1.samples) # plot trace and posterior density for each parameter
+summary(mod1.samples) # print descriptive statistics of posterior densities for parameters
+```
+
+
+```{r posterior_with_true}
+plotTrueAndPosterior <- function(jags.samples, variable.name, true.value) {
+    # this hasn't been tested on a range of inputs
+    plot(density(as.vector(sapply(jags.samples, function(X) X[, variable.name]))), 
+         main = paste(variable.name, "=", round(true.value, 2))); 
+    abline(v=true.value)
+}
+par(mfrow=c(3,3))
+plotTrueAndPosterior(mod1.samples, "beta1.mu", beta1.mu)
+plotTrueAndPosterior(mod1.samples, "beta1.sigma", beta1.sd)
+plotTrueAndPosterior(mod1.samples, "beta2.mu", beta2.mu)
+plotTrueAndPosterior(mod1.samples, "beta2.sigma", beta2.sd)
+plotTrueAndPosterior(mod1.samples, "beta3.mu", beta2.mu)
+plotTrueAndPosterior(mod1.samples, "beta3.sigma", beta2.sd)
+plotTrueAndPosterior(mod1.samples, "sigma.c", Sigma)
+```
+

@@ -1,0 +1,117 @@
+`r opts_chunk$set(cache=TRUE)`
+
+The following example aimed to explore variability in posterior densities based on different random samples and for three different sample sizes.
+
+$latex y_1 \sim N(\mu_{y1}, \sigma^2_{y1})$
+$latex y_2 \sim N(\mu_{y2} + \beta_{y2}, \sigma^2_{y2})$
+
+
+
+# Import packages
+```{r message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(psych)
+library(plyr)
+```
+
+
+# Generate Data
+```{r}
+simulatedata <- function(N=200, MuY1=1, BetaY2=2, SigmaY1=1) {
+    Y1 <- rnorm(N, MuY1, SigmaY1)
+    Y2 <- rnorm(N, MuY1 + BetaY2, SigmaY1)
+    
+    list(Y1=Y1, Y2=Y2)
+}    
+```
+
+# Simple analyses
+```{r}
+Data <- simulatedata()
+plot(Data$Y1, Data$Y2, ylim=c(1,5), xlim=c(1,5)); abline(a=0, b=1)
+```
+
+# JAGS Model
+```{r JAGSmodel, tidy=FALSE}
+
+modeltext <- "
+model {
+    # Model
+    for (i in 1:length(Y1)) {
+        Y1[i] ~ dnorm(MuY1, TauY1)
+        Y2[i] ~ dnorm(MuY1 + BetaY2, TauY1)
+    }
+
+    # Priors
+    MuY1  ~ dnorm(0, 1.0E-3)
+    BetaY2  ~ dunif(0, 1000)
+    TauY1 ~ dgamma(1.0E-3, 1.0E-3);
+    SDY1 <- TauY1 ^ -0.5
+}
+"
+```
+    
+
+
+# Fit Jags Models
+```{r}
+fitmodel <- function() {
+    mod1 <- jags.model(textConnection(modeltext), data=Data, n.chains=1, n.adapt=500, quiet=TRUE)
+    update(mod1, 500) # burn in
+    mod1.samples <- coda.samples(model=mod1, n.iter=1000, thin=1,
+                                 variable.names=c('MuY1', 'BetaY2', 'SDY1'))
+    summary(mod1.samples)$statistics[,1]
+}
+```
+
+# Setup iterative simulator
+```{r message=FALSE}
+Iterations <- 50 # put it up to 200 later
+
+runs <- expand.grid(N=c(5, 20, 100), iteration=seq(Iterations))
+runs$BetaY2 <- NA
+runs$MuY1 <- NA
+runs$SDY1 <- NA
+
+for (i in seq(nrow(runs))) {
+    Data <- simulatedata(N=runs[i, "N"])    
+    fits <- fitmodel()
+    runs[i, names(fits)] <- fits
+}
+```
+
+The simulation is run `r Iterations` times for each selected samples size (5, 20, and 100).
+
+For each run:
+
+1. Data is simulated based on the specification (e.g., sample size).
+2. The posterior mean of each parameter is extracted.
+3. The values for the run are stored in a dataframe, one row per run.
+
+
+# Examine simulation results
+```{r}
+par(mfrow=c(3,1))
+boxplot(MuY1 ~ N, runs, main = "MuY1"); abline(h=1)
+boxplot(BetaY2 ~ N, runs, main ="BetaY2" ); abline(h=2)
+boxplot(SDY1 ~ N, runs, main="SDY1"); abline(h=1)
+
+
+results <- ddply(runs, .(N), summarise, 
+      mean.MuY1=mean(MuY1),
+      mean.BetaY2=mean(BetaY2),
+      mean.SDY1=mean(SDY1),
+      sd.MuY1=sd(MuY1),
+      sd.BetaY2=sd(BetaY2),
+      sd.SDY1=sd(SDY1),
+      min.MuY1=min(MuY1),
+      min.BetaY2=min(BetaY2),
+      min.SDY1=min(SDY1),
+      max.MuY1=max(MuY1),
+      max.BetaY2=max(BetaY2),
+      max.SDY1=max(SDY1))
+
+t(round(results, 4))
+```
