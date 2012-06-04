@@ -1,0 +1,24 @@
+
+model{
+    # likelihood
+    for( i in 1:length(y)) {
+        x[i] ~ dcat(Pi)
+        Beta1[i] <- x[i] == 1
+        Beta2[i] <- x[i] == 2
+        Gamma[i] <- Beta1[i] * Mu[1] + Beta2[i] * Mu[2] + (1 - Beta1[i] - Beta2[i]) * Mu[3]
+        y[i] ~ dnorm(Gamma[i], Tau)
+    
+    }
+
+    # priors
+    Pi[1] ~ dunif(0, 1)
+    Pi[2] ~ dunif(0, 1-Pi[1])
+    Pi[3] <- 1 - Pi[1] - Pi[2]
+
+    Mu[1] ~ dunif(-100, 100)
+    Mu[2] ~ dunif(Mu[1], 100)
+    Mu[3] ~ dunif(Mu[2], 100)
+    Tau ~ dunif(0, 1000)    
+    Sigma <- Tau ^ -0.5
+}
+

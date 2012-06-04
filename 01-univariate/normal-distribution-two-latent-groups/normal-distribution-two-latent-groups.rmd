@@ -1,0 +1,96 @@
+
+Model data drawn from two different latent normal distributions distributions
+with different means but the same standard deviations
+
+# Import packages
+```{r setup, message=FALSE}
+rm(list=ls())
+library(rjags)
+library(coda)
+library(lattice)
+```
+
+
+
+
+# Simulate data
+```{r generate_data}
+set.seed(4444)
+N <- 100 # number of subjects
+Pi <- .3
+Mu1 <- 100
+Sigma1 <- 15 # standard deviation of error
+Mu2 <- 50
+Sigma2 <- 15 # standard deviation of error
+
+S <- rbinom(n=N, size=1, prob=Pi)
+y <- ifelse(S, 
+            rnorm(n=N, mean=Mu1, sd=Sigma1), 
+            rnorm(n=N, mean=Mu2, sd=Sigma2))
+Data <- data.frame(s=S, y)
+
+
+
+# Convert data to input format required by JAGS
+jagsdata <- list(y=y)
+```
+
+
+# Traditional analysis
+```{r traditional_analysis}
+boxplot(y~factor(s), Data)
+```
+
+
+# Specify JAGS model
+```{r bugsmodel}
+jags.script <- "
+model {
+    # Model
+    for (i in 1:length(y)) {
+        s[i] ~ dbern(pi)
+        mu[i] <- mu1 + s[i] * muplus;
+        y[i] ~ dnorm(mu[i], tau);
+    }
+
+    # Priors
+    pi ~ dbeta(1.0, 1.0);
+    mu1 ~ dnorm(0, 1.0E-3);
+    muplus ~ dunif(0, 1.0E+3);
+    tau ~ dgamma(1.0E-3, 1.0E-3);    
+    
+    # Transformations
+    sigma  <- 1.0/sqrt(tau);
+    mu2 <- mu1 + muplus
+}
+"
+```
+
+# Bayesian analysis
+```{r bayesian_analysis}
+mod1 <- jags.model(textConnection(jags.script), data=jagsdata, n.chains=4, n.adapt=1000)
+update(mod1, 1000) # burn in
+
+# monitor
+mod1.samples <- coda.samples(model=mod1,
+                             variable.names=c('mu1', 'mu2', 'sigma', 'pi'),
+                             n.iter=1000)                  
+
+# Model summary and diagnostics
+plot(mod1.samples)    # plot trace and posterior density for each parameter
+summary(mod1.samples) # print descriptive statistics of posterior densities for parameters
+```
+
+
+# sample classification
+<!-- this need to be fixed -->
+```{r, warning=FALSE}
+mod2.samples <- coda.samples(model=mod1,
+                             variable.names=c('s'),
+                             n.iter=10000)                  
+summary.mod2.samples <- try(summary(mod2.samples))
+probgroup <- summary.mod2.samples$statistics[, 'Mean']
+probgroupcomp <- cbind(data=Data$s, pred=probgroup)
+
+boxplot(pred~data, probgroupcomp, xlab="True Group", ylab="Bayesian Model Prob")
+```

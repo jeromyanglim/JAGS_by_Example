@@ -1,0 +1,20 @@
+
+model {
+    # Model
+    for (i in 1:length(y)) {
+        s[i] ~ dbern(pi)
+        mu[i] <- mu1 + s[i] * muplus;
+        y[i] ~ dnorm(mu[i], tau);
+    }
+
+    # Priors
+    pi ~ dbeta(1.0, 1.0);
+    mu1 ~ dnorm(0, 1.0E-3);
+    muplus ~ dunif(0, 1.0E+3);
+    tau ~ dgamma(1.0E-3, 1.0E-3);    
+    
+    # Transformations
+    sigma  <- 1.0/sqrt(tau);
+    mu2 <- mu1 + muplus
+}
+
