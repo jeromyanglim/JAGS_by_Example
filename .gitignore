@@ -1,0 +1,13 @@
+# cached and derived files
+*cache*
+# *figure*
+*.html
+*test*
+
+# Personal notes and folders
+workings.md
+.Rproj.user
+.Rhistory
+draft*
+.archive*
+
